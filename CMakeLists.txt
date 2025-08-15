@@ -2,6 +2,29 @@ cmake_minimum_required(VERSION 3.14)
 
 project(robust_implicit_networks LANGUAGES CXX C)
 
+# CGAL and its components
+find_package( CGAL QUIET COMPONENTS Qt5 )
+
+if ( NOT CGAL_FOUND )
+
+  message(STATUS "This project requires the CGAL library, and will not be compiled.")
+  return()
+
+endif()
+
+
+# Boost and its components
+find_package( Boost REQUIRED )
+
+if ( NOT Boost_FOUND )
+
+  message(STATUS "This project requires the Boost library, and will not be compiled.")
+
+  return()
+
+endif()
+
+
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_LIST_DIR}/cmake)
 include(cli11)
 include(nlohmann-json)
@@ -49,6 +72,18 @@ target_link_libraries(csg simplicial_arrangement::simplicial_arrangement
  target_link_libraries(material_interface simplicial_arrangement::simplicial_arrangement
      CLI11::CLI11 Eigen3::Eigen
      robust_implicit_networks implicit_functions::implicit_functions)
+
+add_executable(voronoi_diagram "app/voronoi_diagram.cpp")
+target_compile_features(voronoi_diagram PRIVATE cxx_std_20)
+target_link_libraries(voronoi_diagram PRIVATE simplicial_arrangement::simplicial_arrangement
+    CLI11::CLI11 Eigen3::Eigen
+    robust_implicit_networks implicit_functions::implicit_functions)
+
+target_link_libraries(voronoi_diagram PRIVATE CGAL::CGAL CGAL::CGAL_Qt5)
+target_link_libraries(voronoi_diagram PUBLIC CGAL::CGAL_Basic_viewer)
+
+
+add_to_cached_list( CGAL_EXECUTABLE_TARGETS voronoi-compare )
 
 option(IMPLICIT_NETWORK_UNIT_TESTS "Build implicit network unit tests" Off)
 if (IMPLICIT_NETWORK_UNIT_TESTS)
