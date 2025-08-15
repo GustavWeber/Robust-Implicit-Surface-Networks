@@ -7,6 +7,7 @@
 
 #include <vector>
 #include <array>
+#include <limits>
 
 static constexpr size_t Mesh_None = std::numeric_limits<size_t>::max();
 
