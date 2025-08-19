@@ -6,16 +6,27 @@
 #define ROBUST_IMPLICIT_NETWORKS_MATERIAL_INTERFACE_H
 
 #include "robust_implicit_networks.h"
+#include <CGAL/Distance_3/Point_3_Triangle_3.h>
+#include <CGAL/Distance_3/Ray_3_Plane_3.h>
 #include <CGAL/Kd_tree_rectangle.h>
+#include <CGAL/enum.h>
 #include <Eigen/src/Core/util/Constants.h>
+#include <boost/mpl/assert.hpp>
+#include <cmath>
 #include <fstream>
 
+#include <limits>
 #include <simplicial_arrangement/lookup_table.h>
 #include <simplicial_arrangement/material_interface.h>
 
 #include <CGAL/Search_traits_3.h>
 #include <CGAL/Search_traits_adapter.h>
 #include <CGAL/Incremental_neighbor_search.h>
+#include <CGAL/K_neighbor_search.h>
+#include <CGAL/squared_distance_3.h>
+
+#include <GJK.h>
+#include <variant>
 
 #include "ScopedTimer.h"
 typedef std::chrono::duration<double> Time_duration;
@@ -36,43 +47,52 @@ public:
 
 template<typename Kernel>
 struct TetDistance {
-    typedef typename Kernel::Tetrahedron_3 Query_item;
+    typedef typename Kernel::Tetrahedron_3 Tetrahedron_3;
+    typedef typename Kernel::Point_3 Point_d;
+    typedef Tetrahedron_3 Query_item;
     typedef CGAL::Dimension_tag<3> D;
     typedef typename Kernel::FT FT;
-    typedef typename Kernel::Point_3 Point_d;
     typedef typename Kernel::Triangle_3 Triangle;
-
-    FT transformed_triangle_distance(const Triangle& tri, Point_d point){
-        //Project point into triangle plane
-        Point_d projected = tri.supporting_plane().projection(point);
-        //If that point is in the triangle, return the distance between point and plane 
-        if(tri.has_on(projected)){
-            return (point-projected).squared_length();
-        }
-    }
+    typedef typename Kernel::Plane_3 Plane;
+    typedef typename Kernel::Line_3 Line;
 
     FT transformed_distance(Query_item query, Point_d point){
-        //Squared euclidian distance between Point and Tet 
-        if(query.has_on_bounded_side(point) || query.has_on_boundary(point)) return 0;
-        
-        FT min_distance = transformed_triangle_distance(Triangle(query[0], query[1], query[2]));
+        return CGAL::squared_distance(point, query);
+    }
 
-        //iterate over faces of the tet and find closest one
-        for(int i = 1; i<4; i++){
-            typename Kernel::Triangle_3 face(query[i], query[i+1], query[i+2]);
-            FT distance = transformed_triangle_distance(face, point);
-            if(distance < min_distance){
-                min_distance = distance;
+    FT min_distance_to_rectangle(Query_item query, CGAL::Kd_tree_rectangle<FT, D> rect) const {
+        return GetDistance<Kernel>(query, rect);
+    }
+
+    FT max_distance_to_rectangle(Query_item query, CGAL::Kd_tree_rectangle<FT, D> rect) const {
+        FT max_distance;
+        std::vector<FT> x_vals = {rect.min_coord(0), rect.max_coord(0)}; 
+        std::vector<FT> y_vals = {rect.min_coord(1), rect.max_coord(1)};
+        std::vector<FT> z_vals = {rect.min_coord(2), rect.max_coord(2)};
+        for(auto x: x_vals) {
+            for(auto y: y_vals){
+                for(auto z: z_vals){
+                    FT distance = CGAL::squared_distance(Point_d(x, y, z), query);
+                    if(distance > max_distance) max_distance = distance;
+                }
             }
         }
-        return min_distance;
-
+        return max_distance;
     }
-    FT min_distance_to_rectangle(Query_item query, CGAL::Kd_tree_rectangle<FT, D> rect) const;
-    FT max_distance_to_rectangle(Query_item query, CGAL::Kd_tree_rectangle<FT, D> rect) const;
-    FT transformed_distance(FT d) const;
-    FT inverse_of_transformed_distance(FT d) const;
+
+    FT transformed_distance(FT d) const {
+        return d*d;
+    }
+
+    FT inverse_of_transformed_distance(FT d) const {
+        return std::sqrt(d);
+    }
 };
+
+template<typename Kernel>
+typename Kernel::Tetrahedron_3 To_CGAL_Tet(const std::array<size_t, 4>& tet, const std::vector<std::array<double, 3>>& verts){
+    return {verts[tet[0]], verts[tet[1]], verts[tet[2]], verts[tet[3]]};
+}
 
 ///
 /// The body of computing the material interface; used in `src/material_interface.cpp`
@@ -112,7 +132,7 @@ bool voronoi_diagram(
     //
     const std::vector<std::array<double, 3>>& verts,
     const std::vector<std::array<size_t, 4>>& tets,
-    const std::vector<typename Kernel::Point_3>& points,
+    const std::vector<typename Kernel::Point_3>& sites,
     //
     std::vector<std::array<double, 3>>& MI_pts,
     std::vector<PolygonFace>& MI_faces,
@@ -133,8 +153,10 @@ bool voronoi_diagram(
 typedef typename Kernel::Point_3 Point;
 typedef typename CGAL::Search_traits_3<Kernel> Traits_base;
 typedef typename CGAL::Search_traits_adapter<typename IndexPointMap<Point>::IndexType, IndexPointMap<Point>, Traits_base> Traits;
+typedef typename CGAL::Incremental_neighbor_search<Traits, TetDistance<Kernel>> IncrementalTetSearch;
 typedef typename CGAL::Incremental_neighbor_search<Traits> PointSearch;
-
+typedef typename CGAL::Kd_tree<Traits> SpatialTree;
+        
 
     if (!use_lookup) {
         use_secondary_lookup = false;
@@ -149,15 +171,15 @@ typedef typename CGAL::Incremental_neighbor_search<Traits> PointSearch;
     stats_labels.emplace_back("num_tets");
     stats.push_back(n_tets);
 
-    size_t n_func = points.size();
+    size_t n_func = sites.size();
     std::cout << "n_func = " << n_func << std::endl;
     
     Matrix evaluated = Matrix::Constant(n_func, n_verts, -1);
     evaluated.setConstant(-1);
 
-    std::function<double(Eigen::Index, Eigen::Index)> funcVals = [points, verts, evaluated](Eigen::Index i, Eigen::Index j){
+    std::function<double(Eigen::Index, Eigen::Index)> funcVals = [sites, verts, evaluated](Eigen::Index i, Eigen::Index j){
         if(evaluated(i, j) == -1){
-            Point point = points[i];
+            Point point = sites[i];
             auto vert = verts[j];
             Point p_vert(vert[0], vert[1], vert[2]);
             auto v = vert-p_vert;
@@ -167,6 +189,10 @@ typedef typename CGAL::Incremental_neighbor_search<Traits> PointSearch;
         }
         return evaluated(i, j);
     };
+
+    //Setup spatial datastructure
+    SpatialTree tree(sites.begin(), sites.end());
+    tree.build();
  
     // highest material at vertices
     std::vector<size_t> highest_material_at_vert;
@@ -179,31 +205,22 @@ typedef typename CGAL::Incremental_neighbor_search<Traits> PointSearch;
         ScopedTimer<> timer("highest func");
         is_degenerate_vertex.resize(n_verts, false);
         highest_material_at_vert.reserve(n_verts);
+
         for (Eigen::Index i = 0; i < n_verts; i++) {
-            double max = funcVals(i, 0);
-            size_t max_id = 0;
-            size_t max_count = 1;
-            for (Eigen::Index j = 1; j < n_func; j++) {
-                if (funcVals(i,j) > max) {
-                    max = funcVals(i,j);
-                    max_id = j;
-                    max_count = 1;
-                } else if (funcVals(i,j) == max) {
-                    ++max_count;
-                }
-            }
-            highest_material_at_vert.push_back(max_id);
-            //
-            if (max_count > 1) {
-                is_degenerate_vertex[i] = true;
+            PointSearch Search(tree, sites[i]);
+
+            typename PointSearch::iterator it = Search.begin();
+            double distance = it->second;
+            highest_material_at_vert.push_back(it->first);
+            it++;
+            while(it->second <= distance){
+                highest_materials_at_vert[i].push_back(it->first);
                 found_degenerate_vertex = true;
-                auto& materials = highest_materials_at_vert[i];
-                materials.reserve(max_count);
-                for (Eigen::Index j = 0; j < n_func; j++) {
-                    if (funcVals(i,j) == max) {
-                        materials.push_back(j);
-                    }
-                }
+                is_degenerate_vertex[i] = true;
+                it++;
+            }
+            if(is_degenerate_vertex[i]){
+                highest_materials_at_vert[i].push_back(highest_material_at_vert[i]);
             }
         }
         timings.push_back(timer.toc());
@@ -248,20 +265,39 @@ typedef typename CGAL::Incremental_neighbor_search<Traits> PointSearch;
                     }
                 }
             }
-            // find materials greater than at least two mins of high materials
-            size_t greater_count;
-            for (size_t j = 0; j < n_func; ++j) {
-                greater_count = 0;
-                for (size_t k = 0; k < 4; ++k) {
-                    if (funcVals(tet[k],j) > min_h[k]) {
-                        ++greater_count;
-                    }
+
+            double max_low = std::numeric_limits<double>::min();
+            for(auto material: materials){
+                //Get vertex of t with lowest value for this material 
+                double min_val = std::numeric_limits<double>::max();
+                
+                for(int i = 0; i<4; i++){
+                    if(funcVals(tet[i], material) < min_val) min_val = funcVals(tet[i], material);
                 }
-                if (greater_count > 1) {
-                    materials.insert(j);
-                }
+                // If this minimum value is greater than the found max, update it 
+                if(min_val > max_low) max_low = min_val;
             }
-            //
+
+            IncrementalTetSearch Search(tree, To_CGAL_Tet<Kernel>(tet, verts));
+            typename IncrementalTetSearch::iterator it;
+            while(true){
+                if(-it->second < max_low) break; // Filter 1: same as filter from lreb. if there is any function whose minimum is greater than your maximum, you're inactive
+                size_t greater_count = 0;
+                for(int i = 0; i<4; i++){
+                    if(funcVals(tet[i], it->first) > min_h[i]) greater_count++;
+                }
+                if(greater_count > 1){ // Filter 2: if you are less than the minimum in three verts, you are not active
+                    materials.insert(it->first);
+                }
+
+                double min_val = std::numeric_limits<double>::max();
+                
+                for(int i = 0; i<4; i++){
+                    if(funcVals(tet[i], it->first) < min_val) min_val = funcVals(tet[i], it->first);
+                }
+                if(min_val > max_low) max_low = min_val;
+                it++;
+            }
             ++num_intersecting_tet;
             material_in_tet.insert(material_in_tet.end(), materials.begin(), materials.end());
             start_index_of_tet.push_back(material_in_tet.size());
