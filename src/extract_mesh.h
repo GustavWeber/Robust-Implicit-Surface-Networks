@@ -10,6 +10,58 @@
 #include <Eigen/Core>
 #include "mesh.h"
 
+// Point on tet edge
+template <typename Scalar>
+inline void compute_barycentric_coords(Scalar f1, Scalar f2, std::array<Scalar, 2>& bary_coords)
+{
+    bary_coords[0] = f2 / (f2 - f1);
+    bary_coords[1] = 1 - bary_coords[0];
+}
+
+// Point on tet face
+template <typename Scalar>
+inline void compute_barycentric_coords(const std::array<Scalar, 3>& plane1,
+                                       const std::array<Scalar, 3>& plane2,
+                                       std::array<Scalar, 3>& bary_coords)
+{
+    Scalar n1 = plane1[2] * plane2[1] - plane1[1] * plane2[2];
+    Scalar n2 = plane1[0] * plane2[2] - plane1[2] * plane2[0];
+    Scalar n3 = plane1[1] * plane2[0] - plane1[0] * plane2[1];
+    Scalar d = n1 + n2 + n3;
+    //
+    bary_coords[0] = n1 / d;
+    bary_coords[1] = n2 / d;
+    bary_coords[2] = n3 / d;
+}
+
+// compute barycentric coordinate of Point (intersection of three planes)
+// Point in tet cell
+template <typename Scalar>
+inline void compute_barycentric_coords(const std::array<Scalar, 4>& plane1,
+                                       const std::array<Scalar, 4>& plane2,
+                                       const std::array<Scalar, 4>& plane3,
+                                       std::array<Scalar, 4>& bary_coords)
+{
+    Scalar n1 = plane1[3] * (plane2[2] * plane3[1] - plane2[1] * plane3[2]) +
+                plane1[2] * (plane2[1] * plane3[3] - plane2[3] * plane3[1]) +
+                plane1[1] * (plane2[3] * plane3[2] - plane2[2] * plane3[3]);
+    Scalar n2 = plane1[3] * (plane2[0] * plane3[2] - plane2[2] * plane3[0]) +
+                plane1[2] * (plane2[3] * plane3[0] - plane2[0] * plane3[3]) +
+                plane1[0] * (plane2[2] * plane3[3] - plane2[3] * plane3[2]);
+    Scalar n3 = plane1[3] * (plane2[1] * plane3[0] - plane2[0] * plane3[1]) +
+                plane1[1] * (plane2[0] * plane3[3] - plane2[3] * plane3[0]) +
+                plane1[0] * (plane2[3] * plane3[1] - plane2[1] * plane3[3]);
+    Scalar n4 = plane1[2] * (plane2[0] * plane3[1] - plane2[1] * plane3[0]) +
+                plane1[1] * (plane2[2] * plane3[0] - plane2[0] * plane3[2]) +
+                plane1[0] * (plane2[1] * plane3[2] - plane2[2] * plane3[1]);
+    Scalar d = n1 + n2 + n3 + n4;
+    //
+    bary_coords[0] = n1 / d;
+    bary_coords[1] = n2 / d;
+    bary_coords[2] = n3 / d;
+    bary_coords[3] = n4 / d;
+}
+
 // extract iso-mesh (topology only)
 void extract_iso_mesh(
         size_t num_1_func, size_t num_2_func, size_t num_more_func,
@@ -106,57 +158,104 @@ void compute_MI_vert_xyz(
         const std::vector<std::array<double,3>> &pts,
         std::vector<std::array<double,3>>& MI_pts);
 
-// compute barycentric coordinate of Point (intersection of three planes)
-// Point in tet cell
-template <typename Scalar>
-inline void compute_barycentric_coords(const std::array<Scalar, 4>& plane1,
-                                       const std::array<Scalar, 4>& plane2,
-                                       const std::array<Scalar, 4>& plane3,
-                                       std::array<Scalar, 4>& bary_coords)
+        
+template<typename FuncValType>
+void compute_MI_vert_xyz(const std::vector<MI_Vert>& MI_verts,
+                         FuncValType &funcVals,
+                         const std::vector<std::array<double, 3>>& pts,
+                         std::vector<std::array<double, 3>>& MI_pts)
 {
-    Scalar n1 = plane1[3] * (plane2[2] * plane3[1] - plane2[1] * plane3[2]) +
-                plane1[2] * (plane2[1] * plane3[3] - plane2[3] * plane3[1]) +
-                plane1[1] * (plane2[3] * plane3[2] - plane2[2] * plane3[3]);
-    Scalar n2 = plane1[3] * (plane2[0] * plane3[2] - plane2[2] * plane3[0]) +
-                plane1[2] * (plane2[3] * plane3[0] - plane2[0] * plane3[3]) +
-                plane1[0] * (plane2[2] * plane3[3] - plane2[3] * plane3[2]);
-    Scalar n3 = plane1[3] * (plane2[1] * plane3[0] - plane2[0] * plane3[1]) +
-                plane1[1] * (plane2[0] * plane3[3] - plane2[3] * plane3[0]) +
-                plane1[0] * (plane2[3] * plane3[1] - plane2[1] * plane3[3]);
-    Scalar n4 = plane1[2] * (plane2[0] * plane3[1] - plane2[1] * plane3[0]) +
-                plane1[1] * (plane2[2] * plane3[0] - plane2[0] * plane3[2]) +
-                plane1[0] * (plane2[1] * plane3[2] - plane2[2] * plane3[1]);
-    Scalar d = n1 + n2 + n3 + n4;
-    //
-    bary_coords[0] = n1 / d;
-    bary_coords[1] = n2 / d;
-    bary_coords[2] = n3 / d;
-    bary_coords[3] = n4 / d;
+    MI_pts.resize(MI_verts.size());
+    std::array<double, 2> b2;
+    std::array<double, 3> f1s3;
+    std::array<double, 3> f2s3;
+    std::array<double, 3> b3;
+    std::array<double, 4> f1s4;
+    std::array<double, 4> f2s4;
+    std::array<double, 4> f3s4;
+    std::array<double, 4> b4;
+    for (size_t i = 0; i < MI_verts.size(); i++) {
+        const auto& MI_vert = MI_verts[i];
+        switch (MI_vert.simplex_size) {
+            case 2: // on tet edge
+            {
+                auto vId1 = MI_vert.simplex_vert_indices[0];
+                auto vId2 = MI_vert.simplex_vert_indices[1];
+                auto fId1 = MI_vert.material_indices[0];
+                auto fId2 = MI_vert.material_indices[1];
+                auto f1 = funcVals(vId1,fId1) - funcVals(vId1,fId2);
+                auto f2 = funcVals(vId2,fId1) - funcVals(vId2,fId2);
+                //
+                compute_barycentric_coords(f1, f2, b2);
+                MI_pts[i][0] = b2[0] * pts[vId1][0] + b2[1] * pts[vId2][0];
+                MI_pts[i][1] = b2[0] * pts[vId1][1] + b2[1] * pts[vId2][1];
+                MI_pts[i][2] = b2[0] * pts[vId1][2] + b2[1] * pts[vId2][2];
+                break;
+            }
+            case 3: // on tet face
+            {
+                auto vId1 = MI_vert.simplex_vert_indices[0];
+                auto vId2 = MI_vert.simplex_vert_indices[1];
+                auto vId3 = MI_vert.simplex_vert_indices[2];
+                auto fId1 = MI_vert.material_indices[0];
+                auto fId2 = MI_vert.material_indices[1];
+                auto fId3 = MI_vert.material_indices[2];
+                // f1 - f2
+                f1s3[0] = funcVals(vId1,fId1) - funcVals(vId1,fId2);
+                f1s3[1] = funcVals(vId2,fId1) - funcVals(vId2,fId2);
+                f1s3[2] = funcVals(vId3,fId1) - funcVals(vId3,fId2);
+                // f2 - f3
+                f2s3[0] = funcVals(vId1,fId2) - funcVals(vId1,fId3);
+                f2s3[1] = funcVals(vId2,fId2) - funcVals(vId2,fId3);
+                f2s3[2] = funcVals(vId3,fId2) - funcVals(vId3,fId3);
+                //
+                compute_barycentric_coords(f1s3, f2s3, b3);
+                MI_pts[i][0] = b3[0] * pts[vId1][0] + b3[1] * pts[vId2][0] + b3[2] * pts[vId3][0];
+                MI_pts[i][1] = b3[0] * pts[vId1][1] + b3[1] * pts[vId2][1] + b3[2] * pts[vId3][1];
+                MI_pts[i][2] = b3[0] * pts[vId1][2] + b3[1] * pts[vId2][2] + b3[2] * pts[vId3][2];
+                break;
+            }
+            case 4: // in tet cell
+            {
+                auto vId1 = MI_vert.simplex_vert_indices[0];
+                auto vId2 = MI_vert.simplex_vert_indices[1];
+                auto vId3 = MI_vert.simplex_vert_indices[2];
+                auto vId4 = MI_vert.simplex_vert_indices[3];
+                auto fId1 = MI_vert.material_indices[0];
+                auto fId2 = MI_vert.material_indices[1];
+                auto fId3 = MI_vert.material_indices[2];
+                auto fId4 = MI_vert.material_indices[3];
+                // f1 - f2
+                f1s4[0] = funcVals(vId1,fId1) - funcVals(vId1,fId2);
+                f1s4[1] = funcVals(vId2,fId1) - funcVals(vId2,fId2);
+                f1s4[2] = funcVals(vId3,fId1) - funcVals(vId3,fId2);
+                f1s4[3] = funcVals(vId4,fId1) - funcVals(vId4,fId2);
+                // f2 - f3
+                f2s4[0] = funcVals(vId1,fId2) - funcVals(vId1,fId3);
+                f2s4[1] = funcVals(vId2,fId2) - funcVals(vId2,fId3);
+                f2s4[2] = funcVals(vId3,fId2) - funcVals(vId3,fId3);
+                f2s4[3] = funcVals(vId4,fId2) - funcVals(vId4,fId3);
+                // f3 - f4
+                f3s4[0] = funcVals(vId1,fId3) - funcVals(vId1,fId4);
+                f3s4[1] = funcVals(vId2,fId3) - funcVals(vId2,fId4);
+                f3s4[2] = funcVals(vId3,fId3) - funcVals(vId3,fId4);
+                f3s4[3] = funcVals(vId4,fId3) - funcVals(vId4,fId4);
+                //
+                compute_barycentric_coords(f1s4, f2s4, f3s4, b4);
+                MI_pts[i][0] = b4[0] * pts[vId1][0] + b4[1] * pts[vId2][0] + b4[2] * pts[vId3][0] +
+                               b4[3] * pts[vId4][0];
+                MI_pts[i][1] = b4[0] * pts[vId1][1] + b4[1] * pts[vId2][1] + b4[2] * pts[vId3][1] +
+                               b4[3] * pts[vId4][1];
+                MI_pts[i][2] = b4[0] * pts[vId1][2] + b4[1] * pts[vId2][2] + b4[2] * pts[vId3][2] +
+                               b4[3] * pts[vId4][2];
+                break;
+            }
+            case 1: // on tet vertex
+                MI_pts[i] = pts[MI_vert.simplex_vert_indices[0]];
+                break;
+            default: break;
+        }
+    }
 }
-
-// Point on tet face
-template <typename Scalar>
-inline void compute_barycentric_coords(const std::array<Scalar, 3>& plane1,
-                                       const std::array<Scalar, 3>& plane2,
-                                       std::array<Scalar, 3>& bary_coords)
-{
-    Scalar n1 = plane1[2] * plane2[1] - plane1[1] * plane2[2];
-    Scalar n2 = plane1[0] * plane2[2] - plane1[2] * plane2[0];
-    Scalar n3 = plane1[1] * plane2[0] - plane1[0] * plane2[1];
-    Scalar d = n1 + n2 + n3;
-    //
-    bary_coords[0] = n1 / d;
-    bary_coords[1] = n2 / d;
-    bary_coords[2] = n3 / d;
-}
-
-// Point on tet edge
-template <typename Scalar>
-inline void compute_barycentric_coords(Scalar f1, Scalar f2, std::array<Scalar, 2>& bary_coords)
-{
-    bary_coords[0] = f2 / (f2 - f1);
-    bary_coords[1] = 1 - bary_coords[0];
-}
-
 
 #endif //ROBUST_IMPLICIT_NETWORKS_EXTRACT_MESH_H

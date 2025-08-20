@@ -9,9 +9,13 @@
 #include <CGAL/Distance_3/Point_3_Triangle_3.h>
 #include <CGAL/Distance_3/Ray_3_Plane_3.h>
 #include <CGAL/Kd_tree_rectangle.h>
+#include <CGAL/Splitters.h>
 #include <CGAL/enum.h>
+#include <CGAL/tags.h>
 #include <Eigen/src/Core/util/Constants.h>
+#include <boost/iterator/counting_iterator.hpp>
 #include <boost/mpl/assert.hpp>
+#include <boost/property_map/property_map.hpp>
 #include <cmath>
 #include <fstream>
 
@@ -26,7 +30,6 @@
 #include <CGAL/squared_distance_3.h>
 
 #include <GJK.h>
-#include <variant>
 
 #include "ScopedTimer.h"
 typedef std::chrono::duration<double> Time_duration;
@@ -37,7 +40,11 @@ template<typename Point>
 struct IndexPointMap {
     const std::vector<Point>& _points;
 public:
+    typedef Point value_type;
+    typedef const value_type& reference;
     typedef int IndexType;
+    typedef IndexType key_type;
+    typedef boost::lvalue_property_map_tag category;
     IndexPointMap(const std::vector<Point>& points) : _points(points){}
 
     const Point& operator[](IndexType index) const { return _points[index]; }
@@ -45,26 +52,25 @@ public:
     friend const Point& get(const IndexPointMap<Point>& imap, IndexType index) { return imap[index]; }
 };
 
-template<typename Kernel>
+template<typename Traits, typename Kernel>
 struct TetDistance {
     typedef typename Kernel::Tetrahedron_3 Tetrahedron_3;
-    typedef typename Kernel::Point_3 Point_d;
+    typedef typename Traits::Point_d Point_d;
     typedef Tetrahedron_3 Query_item;
     typedef CGAL::Dimension_tag<3> D;
-    typedef typename Kernel::FT FT;
-    typedef typename Kernel::Triangle_3 Triangle;
-    typedef typename Kernel::Plane_3 Plane;
-    typedef typename Kernel::Line_3 Line;
+    typedef typename Traits::FT FT;
+
+    const IndexPointMap<typename Kernel::Point_3>& imap;
 
     FT transformed_distance(Query_item query, Point_d point){
-        return CGAL::squared_distance(point, query);
+        return CGAL::squared_distance(imap[point], query);
     }
 
-    FT min_distance_to_rectangle(Query_item query, CGAL::Kd_tree_rectangle<FT, D> rect) const {
+    FT min_distance_to_rectangle(Query_item query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
         return GetDistance<Kernel>(query, rect);
     }
 
-    FT max_distance_to_rectangle(Query_item query, CGAL::Kd_tree_rectangle<FT, D> rect) const {
+    FT max_distance_to_rectangle(Query_item query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
         FT max_distance;
         std::vector<FT> x_vals = {rect.min_coord(0), rect.max_coord(0)}; 
         std::vector<FT> y_vals = {rect.min_coord(1), rect.max_coord(1)};
@@ -72,7 +78,7 @@ struct TetDistance {
         for(auto x: x_vals) {
             for(auto y: y_vals){
                 for(auto z: z_vals){
-                    FT distance = CGAL::squared_distance(Point_d(x, y, z), query);
+                    FT distance = CGAL::squared_distance({x, y, z}, query);
                     if(distance > max_distance) max_distance = distance;
                 }
             }
@@ -91,7 +97,11 @@ struct TetDistance {
 
 template<typename Kernel>
 typename Kernel::Tetrahedron_3 To_CGAL_Tet(const std::array<size_t, 4>& tet, const std::vector<std::array<double, 3>>& verts){
-    return {verts[tet[0]], verts[tet[1]], verts[tet[2]], verts[tet[3]]};
+    std::array<typename Kernel::Point_3, 3> vertices;
+    for(int i = 0; i<4; i++){
+        vertices[i] = {verts[tet[i]][0], verts[tet[i]][1], verts[tet[i]][2]};
+    }
+    return typename Kernel::Tetrahedron_3(vertices[0], vertices[1], vertices[2], vertices[3]);
 }
 
 ///
@@ -153,9 +163,9 @@ bool voronoi_diagram(
 typedef typename Kernel::Point_3 Point;
 typedef typename CGAL::Search_traits_3<Kernel> Traits_base;
 typedef typename CGAL::Search_traits_adapter<typename IndexPointMap<Point>::IndexType, IndexPointMap<Point>, Traits_base> Traits;
-typedef typename CGAL::Incremental_neighbor_search<Traits, TetDistance<Kernel>> IncrementalTetSearch;
+typedef typename CGAL::Incremental_neighbor_search<Traits, TetDistance<Traits, Kernel>> IncrementalTetSearch;
 typedef typename CGAL::Incremental_neighbor_search<Traits> PointSearch;
-typedef typename CGAL::Kd_tree<Traits> SpatialTree;
+typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag_false, CGAL::Tag_false> SpatialTree;
         
 
     if (!use_lookup) {
@@ -177,12 +187,12 @@ typedef typename CGAL::Kd_tree<Traits> SpatialTree;
     Matrix evaluated = Matrix::Constant(n_func, n_verts, -1);
     evaluated.setConstant(-1);
 
-    std::function<double(Eigen::Index, Eigen::Index)> funcVals = [sites, verts, evaluated](Eigen::Index i, Eigen::Index j){
+    std::function<double(Eigen::Index, Eigen::Index)> funcVals = [sites, verts, evaluated](Eigen::Index i, Eigen::Index j) mutable {
         if(evaluated(i, j) == -1){
-            Point point = sites[i];
+            Point p_site = sites[i];
             auto vert = verts[j];
             Point p_vert(vert[0], vert[1], vert[2]);
-            auto v = vert-p_vert;
+            auto v = p_site-p_vert;
 
             evaluated(i, j) = -v.squared_length();
             //Using squared distance, since for unweighted diagrams it does not make a difference
@@ -191,8 +201,15 @@ typedef typename CGAL::Kd_tree<Traits> SpatialTree;
     };
 
     //Setup spatial datastructure
-    SpatialTree tree(sites.begin(), sites.end());
+    IndexPointMap<Point> imap(sites);
+    SpatialTree tree(
+        boost::counting_iterator<typename IndexPointMap<Point>::IndexType>(0),
+        boost::counting_iterator<typename IndexPointMap<Point>::IndexType>(n_func),
+        typename SpatialTree::Splitter(),
+        Traits(imap)
+    );
     tree.build();
+    typename PointSearch::Distance point_distance(imap);
  
     // highest material at vertices
     std::vector<size_t> highest_material_at_vert;
@@ -207,7 +224,9 @@ typedef typename CGAL::Kd_tree<Traits> SpatialTree;
         highest_material_at_vert.reserve(n_verts);
 
         for (Eigen::Index i = 0; i < n_verts; i++) {
-            PointSearch Search(tree, sites[i]);
+            Point query(verts[i][0], verts[i][1], verts[i][2]);
+
+            PointSearch Search(tree, query, 0.0, true, point_distance);
 
             typename PointSearch::iterator it = Search.begin();
             double distance = it->second;
@@ -278,8 +297,8 @@ typedef typename CGAL::Kd_tree<Traits> SpatialTree;
                 if(min_val > max_low) max_low = min_val;
             }
 
-            IncrementalTetSearch Search(tree, To_CGAL_Tet<Kernel>(tet, verts));
-            typename IncrementalTetSearch::iterator it;
+            IncrementalTetSearch Search(tree, To_CGAL_Tet<Kernel>(tet, verts), 0.0, true, {imap});
+            typename IncrementalTetSearch::iterator it = Search.begin();
             while(true){
                 if(-it->second < max_low) break; // Filter 1: same as filter from lreb. if there is any function whose minimum is greater than your maximum, you're inactive
                 size_t greater_count = 0;
@@ -297,6 +316,7 @@ typedef typename CGAL::Kd_tree<Traits> SpatialTree;
                 }
                 if(min_val > max_low) max_low = min_val;
                 it++;
+
             }
             ++num_intersecting_tet;
             material_in_tet.insert(material_in_tet.end(), materials.begin(), materials.end());
@@ -851,7 +871,7 @@ typedef typename CGAL::Kd_tree<Traits> SpatialTree;
 
 template<typename Point>
 bool load_points(std::string func_file, std::vector<Point>& target){
-        std::ofstream file(func_file);
+        std::ifstream file(func_file);
         if(!file) return false;
         Point p;
         while(file >> p){

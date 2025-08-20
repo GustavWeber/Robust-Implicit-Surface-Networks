@@ -1537,7 +1537,6 @@ void compute_iso_vert_xyz(const std::vector<IsoVert>& iso_verts,
     }
 }
 
-
 void compute_MI_vert_xyz(const std::vector<MI_Vert>& MI_verts,
                          const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> &funcVals,
                          const std::vector<std::array<double, 3>>& pts,

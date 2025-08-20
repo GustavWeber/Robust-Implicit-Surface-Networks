@@ -7,11 +7,13 @@
 #include <CLI/CLI.hpp>
 #include <Eigen/Core>
 
+
 #include "voronoi_diagram.h"
 
 #include <CGAL/Simple_cartesian.h> 
 
-typedef CGAL::Simple_cartesian<double>::Point_3 Point_3;
+typedef CGAL::Simple_cartesian<double> Kernel;
+typedef Kernel::Point_3 Point_3;
 
 using namespace simplicial_arrangement;
 
@@ -87,7 +89,7 @@ int main(int argc, const char* argv[])
     std::vector<std::string> stats_labels;
     std::vector<size_t> stats;
 
-    if (!voronoi_diagram(
+    if (!voronoi_diagram<Kernel>(
             args.robust_test,
             config.use_lookup,
             config.use_secondary_lookup,
