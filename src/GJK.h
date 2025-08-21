@@ -10,6 +10,7 @@
 #include <CGAL/enum.h>
 #include <vector>
 
+namespace GJK {
 template<typename Kernel>
 typename Kernel::Point_3 support_point(const typename Kernel::Tetrahedron_3& tet, typename Kernel::Vector_3 direction){
     typename Kernel::Point_3 point;
@@ -154,7 +155,6 @@ typedef typename Kernel::Vector_3 Vector;
     Vector direction(1, 0, 0); // arbitrary starting direction
     simplex.emplace_back(get_minkowski_diff_point<Kernel>(rect, tet, direction));
     while(true){
-
         // if simplex contains origin return 0
         if(simplex_contains_origin<Kernel>(simplex)) return 0;
         // reduce simplex and get new direction
@@ -169,5 +169,5 @@ typedef typename Kernel::Vector_3 Vector;
         simplex.emplace_back(new_point);
     }
 }
-
+};
 #endif  // ROBUST_IMPLICIT_SURFACE_NETWORKS_GJK
