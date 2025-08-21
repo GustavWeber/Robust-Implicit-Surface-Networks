@@ -20,6 +20,7 @@
 #include <fstream>
 
 #include <limits>
+#include <ostream>
 #include <simplicial_arrangement/lookup_table.h>
 #include <simplicial_arrangement/material_interface.h>
 
@@ -30,6 +31,7 @@
 #include <CGAL/squared_distance_3.h>
 
 #include <GJK.h>
+#include <approximate_tet_distance.h>
 
 #include "ScopedTimer.h"
 typedef std::chrono::duration<double> Time_duration;
@@ -67,7 +69,8 @@ struct TetDistance {
     }
 
     FT min_distance_to_rectangle(Query_item query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
-        return GetDistance<Kernel>(query, rect);
+        //return GJK::GetDistance<Kernel>(query, rect);
+        return ApproxTetDist::GetDistance<Kernel>(query, rect);
     }
 
     FT max_distance_to_rectangle(Query_item query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
@@ -97,7 +100,7 @@ struct TetDistance {
 
 template<typename Kernel>
 typename Kernel::Tetrahedron_3 To_CGAL_Tet(const std::array<size_t, 4>& tet, const std::vector<std::array<double, 3>>& verts){
-    std::array<typename Kernel::Point_3, 3> vertices;
+    std::array<typename Kernel::Point_3, 4> vertices;
     for(int i = 0; i<4; i++){
         vertices[i] = {verts[tet[i]][0], verts[tet[i]][1], verts[tet[i]][2]};
     }
@@ -105,7 +108,7 @@ typename Kernel::Tetrahedron_3 To_CGAL_Tet(const std::array<size_t, 4>& tet, con
 }
 
 ///
-/// The body of computing the material interface; used in `src/material_interface.cpp`
+/// The body of computing the voronoi diagram; used in `src/voronoi_diagram.cpp`
 ///
 ///  @param     Point           the type for the sites
 ///  @param[in] robust_test         Toggle robust test: run twice and see if both results are consistent
@@ -184,11 +187,10 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
     size_t n_func = sites.size();
     std::cout << "n_func = " << n_func << std::endl;
     
-    Matrix evaluated = Matrix::Constant(n_func, n_verts, -1);
-    evaluated.setConstant(-1);
+    Matrix evaluated = Matrix::Constant(n_verts, n_func, 1);
 
     std::function<double(Eigen::Index, Eigen::Index)> funcVals = [sites, verts, evaluated](Eigen::Index i, Eigen::Index j) mutable {
-        if(evaluated(i, j) == -1){
+        if(evaluated(i, j) == 1){
             Point p_site = sites[i];
             auto vert = verts[j];
             Point p_vert(vert[0], vert[1], vert[2]);
@@ -199,7 +201,10 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         }
         return evaluated(i, j);
     };
-
+    
+    std::cout << "Building tree" << std::endl;
+    timing_labels.emplace_back("tree building");
+    ScopedTimer<> tree_timer("tree building");
     //Setup spatial datastructure
     IndexPointMap<Point> imap(sites);
     SpatialTree tree(
@@ -209,8 +214,12 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         Traits(imap)
     );
     tree.build();
+    timings.push_back(tree_timer.toc());
+
     typename PointSearch::Distance point_distance(imap);
  
+
+    std::cout << "Finding dominating functions at verts" << std::endl;
     // highest material at vertices
     std::vector<size_t> highest_material_at_vert;
     // degenerate vertex: more than one highest material, i.e. material interface passes the vertex
@@ -244,9 +253,12 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         }
         timings.push_back(timer.toc());
     }
+    std::cout << "degenerate? " << (found_degenerate_vertex ? "Yes" : "No") << std:: endl;
 
+    std::cout << "Filter" << std::endl;
     // filter active materials in each tet
     // a tet is non-empty if there are material interface in it
+    int full_empty = 0;
     size_t num_intersecting_tet = 0;
     std::vector<size_t> material_in_tet; // active material indices in CRS vector format
     std::vector<size_t> start_index_of_tet;
@@ -258,7 +270,9 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         start_index_of_tet.push_back(0);
         std::set<size_t> materials;
         std::array<double, 4> min_h;
+        int t_cnt = 0;
         for (size_t i = 0; i < n_tets; ++i) {
+            //std::cout << "tet " << t_cnt++ << std::endl;
             const auto& tet = tets[i];
             // find high materials
             materials.clear();
@@ -273,6 +287,8 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
             // if only one high material, there is no material interface
             if (materials.size() < 2) {  // no material interface
                 start_index_of_tet.push_back(material_in_tet.size());
+                full_empty++;
+                //std::cout << "all same vert" << std::endl;
                 continue;
             }
             // find min of high materials -> for each vertex find the lowest value out of the materials dominating at any vert.
@@ -285,7 +301,7 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
                 }
             }
 
-            double max_low = std::numeric_limits<double>::min();
+            double max_low = std::numeric_limits<double>::lowest();
             for(auto material: materials){
                 //Get vertex of t with lowest value for this material 
                 double min_val = std::numeric_limits<double>::max();
@@ -296,25 +312,27 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
                 // If this minimum value is greater than the found max, update it 
                 if(min_val > max_low) max_low = min_val;
             }
-
             IncrementalTetSearch Search(tree, To_CGAL_Tet<Kernel>(tet, verts), 0.0, true, {imap});
             typename IncrementalTetSearch::iterator it = Search.begin();
-            while(true){
-                if(-it->second < max_low) break; // Filter 1: same as filter from lreb. if there is any function whose minimum is greater than your maximum, you're inactive
+            for(int i = 0; i<n_func; i++){
+                //std::cout << "item " << i << " item: " << it->first << std::endl;
+                if(-(it->second) < max_low) break; // Filter 1: same as filter from lreb. if there is any function whose minimum is greater than your maximum, you're inactive
+                //std::cout << "passed first filter" << std::endl;
                 size_t greater_count = 0;
                 for(int i = 0; i<4; i++){
                     if(funcVals(tet[i], it->first) > min_h[i]) greater_count++;
                 }
                 if(greater_count > 1){ // Filter 2: if you are less than the minimum in three verts, you are not active
+                    //std::cout << "Active" << std::endl;
                     materials.insert(it->first);
                 }
 
                 double min_val = std::numeric_limits<double>::max();
-                
                 for(int i = 0; i<4; i++){
                     if(funcVals(tet[i], it->first) < min_val) min_val = funcVals(tet[i], it->first);
                 }
                 if(min_val > max_low) max_low = min_val;
+
                 it++;
 
             }
@@ -324,6 +342,9 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         }
         timings.push_back(timer.toc());
     }
+
+    std::cout << "full_empty: " << full_empty << std::endl;
+
     std::cout << "num_intersecting_tet = " << num_intersecting_tet << std::endl;
     stats_labels.emplace_back("num_intersecting_tet");
     stats.push_back(num_intersecting_tet);
@@ -460,6 +481,7 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
                 }
             }
         } else {  // not performing robustness test
+            std::cout << "No robustness test" << std::endl;
             cut_results.reserve(num_intersecting_tet);
             cut_result_index.reserve(n_tets);
             size_t start_index;
@@ -468,6 +490,7 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
             materials.reserve(3);
             try {
                 for (size_t i = 0; i < tets.size(); i++) {
+                    //std::cout << "MI tet: " << i << std::endl;
                     start_index = start_index_of_tet[i];
                     num_func = start_index_of_tet[i + 1] - start_index;
                     if (num_func == 0) {
@@ -561,6 +584,9 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         }
     }
 
+    std::cout << "num 2 func: " << num_2_func << std::endl;
+    std::cout << "num 3 func: " << num_3_func << std::endl;
+    std::cout << "num more func: " << num_more_func << std::endl;
 
     // extract material interface mesh
     std::vector<MI_Vert> MI_verts;
@@ -702,6 +728,7 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         }
         timings.push_back(timer.toc());
     }
+    std::cout << "degenerate verts?" << (found_degenerate_vertex ? " Yes" : " No") << std::endl;
     std::cout << "incident_tets.size() = " << incident_tets.size() << std::endl;
 
     // compute order of patches around chains
