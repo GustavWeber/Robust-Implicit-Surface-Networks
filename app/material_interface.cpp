@@ -44,6 +44,8 @@ int main(int argc, const char* argv[])
         config.use_secondary_lookup = false;
     }
 
+    output_dir = config.output_dir;
+
     // load tet mesh
     std::vector<std::array<double, 3>> pts;
     std::vector<std::array<size_t, 4>> tets;
