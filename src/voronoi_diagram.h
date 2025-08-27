@@ -8,6 +8,7 @@
 #include "robust_implicit_networks.h"
 #include <CGAL/Distance_3/Point_3_Triangle_3.h>
 #include <CGAL/Distance_3/Ray_3_Plane_3.h>
+#include <CGAL/Distance_3/Segment_3_Line_3.h>
 #include <CGAL/Kd_tree_rectangle.h>
 #include <CGAL/Splitters.h>
 #include <CGAL/enum.h>
@@ -20,9 +21,10 @@
 #include <fstream>
 
 #include <limits>
-#include <ostream>
 #include <simplicial_arrangement/lookup_table.h>
 #include <simplicial_arrangement/material_interface.h>
+#include <io.h>
+
 
 #include <CGAL/Search_traits_3.h>
 #include <CGAL/Search_traits_adapter.h>
@@ -102,7 +104,8 @@ template<typename Kernel>
 typename Kernel::Tetrahedron_3 To_CGAL_Tet(const std::array<size_t, 4>& tet, const std::vector<std::array<double, 3>>& verts){
     std::array<typename Kernel::Point_3, 4> vertices;
     for(int i = 0; i<4; i++){
-        vertices[i] = {verts[tet[i]][0], verts[tet[i]][1], verts[tet[i]][2]};
+        auto vert = verts[tet[i]];
+        vertices[i] = {vert[0], vert[1], vert[2]};
     }
     return typename Kernel::Tetrahedron_3(vertices[0], vertices[1], vertices[2], vertices[3]);
 }
@@ -115,6 +118,7 @@ typename Kernel::Tetrahedron_3 To_CGAL_Tet(const std::array<size_t, 4>& tet, con
 ///  @param[in] use_lookup           Toggle to use a look-up table: Use look-up table to accelerate
 ///  @param[in] use_secondary_lookup            Toggle to use look-up tables for tetrahedral with two active functions
 ///  @param[in] use_topo_ray_shooting           Toggle to use topological ray shooting to compute the spatial decomposition induced by the arrangement
+///  @param[in] use_original_filter             Toggle to use the filter from original MI calculation in addition to the security radius
 ///  @param[in] pts         Vertices of the background grid
 ///  @param[in] tets            Tetetrahedra corners' vertex indices
 ///  @param[in] funcVals            2D matrix of function values at all vertices
@@ -142,6 +146,7 @@ bool voronoi_diagram(
     bool use_lookup,
     bool use_secondary_lookup,
     bool use_topo_ray_shooting,
+    bool use_original_filter,
     //
     const std::vector<std::array<double, 3>>& verts,
     const std::vector<std::array<size_t, 4>>& tets,
@@ -189,17 +194,19 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
     
     Matrix evaluated = Matrix::Constant(n_verts, n_func, 1);
 
-    std::function<double(Eigen::Index, Eigen::Index)> funcVals = [sites, verts, evaluated](Eigen::Index i, Eigen::Index j) mutable {
-        if(evaluated(i, j) == 1){
-            Point p_site = sites[i];
-            auto vert = verts[j];
+    std::function<double(Eigen::Index, Eigen::Index)> funcVals = [sites, verts, evaluated](Eigen::Index vert_index, Eigen::Index site_index) mutable {
+        if(evaluated(vert_index, site_index) == 1){
+            assert(site_index<sites.size());
+            assert(vert_index<verts.size());
+            Point p_site = sites[site_index];
+            auto vert = verts[vert_index];
             Point p_vert(vert[0], vert[1], vert[2]);
             auto v = p_site-p_vert;
 
-            evaluated(i, j) = -v.squared_length();
+            evaluated(vert_index, site_index) = -v.squared_length();
             //Using squared distance, since for unweighted diagrams it does not make a difference
         }
-        return evaluated(i, j);
+        return evaluated(vert_index, site_index);
     };
     
     std::cout << "Building tree" << std::endl;
@@ -218,7 +225,6 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
 
     typename PointSearch::Distance point_distance(imap);
  
-
     std::cout << "Finding dominating functions at verts" << std::endl;
     // highest material at vertices
     std::vector<size_t> highest_material_at_vert;
@@ -253,8 +259,12 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         }
         timings.push_back(timer.toc());
     }
-    std::cout << "degenerate? " << (found_degenerate_vertex ? "Yes" : "No") << std:: endl;
-
+    /*
+    std::vector<std::vector<size_t>> filtered_materials;
+    filtered_materials.reserve(n_tets);
+    std::vector<size_t> max_low_mats;
+    max_low_mats.reserve(n_tets);
+    */
     std::cout << "Filter" << std::endl;
     // filter active materials in each tet
     // a tet is non-empty if there are material interface in it
@@ -270,10 +280,9 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         start_index_of_tet.push_back(0);
         std::set<size_t> materials;
         std::array<double, 4> min_h;
-        int t_cnt = 0;
         for (size_t i = 0; i < n_tets; ++i) {
-            //std::cout << "tet " << t_cnt++ << std::endl;
             const auto& tet = tets[i];
+            //filtered_materials.emplace_back();
             // find high materials
             materials.clear();
             for (size_t j = 0; j < 4; ++j) {
@@ -288,9 +297,10 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
             if (materials.size() < 2) {  // no material interface
                 start_index_of_tet.push_back(material_in_tet.size());
                 full_empty++;
-                //std::cout << "all same vert" << std::endl;
+                //max_low_mats.emplace_back(0);
                 continue;
             }
+            
             // find min of high materials -> for each vertex find the lowest value out of the materials dominating at any vert.
             min_h.fill(std::numeric_limits<double>::max());
             for(auto it = materials.begin(); it != materials.end(); it++) {
@@ -300,9 +310,10 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
                     }
                 }
             }
-
+            
             double max_low = std::numeric_limits<double>::lowest();
-            for(auto material: materials){
+            //size_t max_low_mat = -1;
+            for(auto material: materials){ //TODO: maybe we can also do this in the above loop
                 //Get vertex of t with lowest value for this material 
                 double min_val = std::numeric_limits<double>::max();
                 
@@ -310,32 +321,43 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
                     if(funcVals(tet[i], material) < min_val) min_val = funcVals(tet[i], material);
                 }
                 // If this minimum value is greater than the found max, update it 
-                if(min_val > max_low) max_low = min_val;
+                if(min_val > max_low) {
+                    max_low = min_val;
+                    //max_low_mat = material;
+                }
             }
             IncrementalTetSearch Search(tree, To_CGAL_Tet<Kernel>(tet, verts), 0.0, true, {imap});
             typename IncrementalTetSearch::iterator it = Search.begin();
-            for(int i = 0; i<n_func; i++){
-                //std::cout << "item " << i << " item: " << it->first << std::endl;
-                if(-(it->second) < max_low) break; // Filter 1: same as filter from lreb. if there is any function whose minimum is greater than your maximum, you're inactive
-                //std::cout << "passed first filter" << std::endl;
-                size_t greater_count = 0;
-                for(int i = 0; i<4; i++){
-                    if(funcVals(tet[i], it->first) > min_h[i]) greater_count++;
+            for(int func_count = 0; func_count<n_func; func_count++){
+                if(-(it->second) < max_low) { // Filter 1: If your closest point is further than the furthest point of another mat, that mat dominates you in the tet
+                    break;
                 }
-                if(greater_count > 1){ // Filter 2: if you are less than the minimum in three verts, you are not active
-                    //std::cout << "Active" << std::endl;
+                if(!use_original_filter) {
                     materials.insert(it->first);
+                    it++;
+                    continue; 
                 }
 
-                double min_val = std::numeric_limits<double>::max();
-                for(int i = 0; i<4; i++){
-                    if(funcVals(tet[i], it->first) < min_val) min_val = funcVals(tet[i], it->first);
+                // Filter 2: if you are less than the minimum in three verts, you are not active
+                size_t greater_count = 0;
+                for(int vert = 0; vert<4; vert++){
+                    if(funcVals(tet[vert], it->first) >= min_h[vert]) greater_count++;
                 }
-                if(min_val > max_low) max_low = min_val;
-
+                if(greater_count > 1){ 
+                    materials.insert(it->first);
+                    
+                    double min_val = std::numeric_limits<double>::max();
+                    for(int i = 0; i<4; i++){
+                        if(funcVals(tet[i], it->first) < min_val) min_val = funcVals(tet[i], it->first);
+                    }
+                    if(min_val > max_low ){ 
+                        max_low = min_val;
+                    }
+                }
                 it++;
 
             }
+
             ++num_intersecting_tet;
             material_in_tet.insert(material_in_tet.end(), materials.begin(), materials.end());
             start_index_of_tet.push_back(material_in_tet.size());
@@ -348,6 +370,10 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
     std::cout << "num_intersecting_tet = " << num_intersecting_tet << std::endl;
     stats_labels.emplace_back("num_intersecting_tet");
     stats.push_back(num_intersecting_tet);
+
+#ifdef WRITEACTIVEFUNCS
+    WriteActiveFuncDistribution(start_index_of_tet);
+#endif //WRITEACTIVEFUNCS
 
     // compute material interface in each tet
     std::vector<MaterialInterface<3>> cut_results;
@@ -513,7 +539,7 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
                         material[2] = funcVals(v3, f_id);
                         material[3] = funcVals(v4, f_id);
                     }
-                    //
+                    
                     if (use_lookup && !use_secondary_lookup && num_func == 3) {
                         cut_result_index.push_back(cut_results.size());
                         disable_lookup_table();
@@ -523,8 +549,34 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
                         cut_result_index.push_back(cut_results.size());
                         cut_results.emplace_back(std::move(compute_material_interface(materials)));
                     }
-
-                    //
+                    /*
+                    for(auto cell: cut_results.back().cells){
+                        for(auto filtered: filtered_materials[i]){
+                            if(cell.material_label == filtered){
+                                std::cout << "tet " << i << " has active filtered material " << cell.material_label << std::endl;
+                                std::cout << "materials as filtered: ";
+                                for(int j = 0; j<num_func; j++) std::cout << material_in_tet[start_index+j] << " ";
+                                std::cout << std::endl;
+                                for(auto vert_index: tets[i]){
+                                    std::cout << vert_index << ": " << std::endl;
+                                    std::cout << "  filtered ("<< filtered << "): " << funcVals(vert_index, filtered) << std::endl;;
+                                    std::cout << "  max_low ("<< max_low_mats[i] << "):  " << funcVals(vert_index, max_low_mats[i]) << std::endl;
+                                }
+                                for(auto vert: cut_results.back().vertices){
+                                    std::cout << "MI vertex: ";
+                                    for(auto elem: vert) std::cout << elem << " ";
+                                    std::cout << std::endl;
+                                }
+                                for(auto celli: cut_results.back().cells){
+                                    std::cout << "MI Cell: " << celli.material_label << std::endl;
+                                }
+                                for(auto face: cut_results.back().faces){
+                                    std::cout << "MI Face: + " << face.positive_material_label << " - " << face.negative_material_label << std::endl;
+                                }
+                            }
+                        }
+                    }
+                    */
                     std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
                     switch (num_func) {
                         case 2:
