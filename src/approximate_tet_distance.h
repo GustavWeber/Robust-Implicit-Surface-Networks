@@ -10,13 +10,13 @@ template<typename Kernel>
 typename Kernel::FT GetDistance(const typename Kernel::Tetrahedron_3& tet, const CGAL::Kd_tree_rectangle<typename Kernel::FT, CGAL::Dimension_tag<3>>& rect){
 typedef typename Kernel::FT FT;
     const CGAL::Bbox_3& bbox = tet.bbox();
-    FT distance;
+    FT distance = 0;
     FT dim_dist;
     for(int dim = 0; dim<3; dim++){
         if(bbox.min(dim) > rect.max_coord(dim)){
             dim_dist = bbox.min(dim) - rect.max_coord(dim);
         } else if(bbox.max(dim) < rect.min_coord(dim)){
-            dim_dist = bbox.max(dim) - rect.max_coord(dim);
+            dim_dist = rect.min_coord(dim) - bbox.max(dim);
         } else {
             dim_dist = 0;
         }
