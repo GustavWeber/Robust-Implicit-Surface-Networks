@@ -7,13 +7,15 @@
 #include <CLI/CLI.hpp>
 #include <Eigen/Core>
 
+//#define WRITEACTIVEFUNCS
 
 #include "voronoi_diagram.h"
 
 #include <CGAL/Simple_cartesian.h> 
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
 
-typedef CGAL::Exact_predicates_inexact_constructions_kernel Kernel;
+
+typedef CGAL::Simple_cartesian<double> Kernel;
 typedef Kernel::Point_3 Point_3;
 
 using namespace simplicial_arrangement;
@@ -49,6 +51,8 @@ int main(int argc, const char* argv[])
         disable_lookup_table();
         config.use_secondary_lookup = false;
     }
+
+    output_dir = config.output_dir;
 
     // load tet mesh
     std::vector<std::array<double, 3>> pts;
@@ -95,6 +99,7 @@ int main(int argc, const char* argv[])
             config.use_lookup,
             config.use_secondary_lookup,
             config.use_topo_ray_shooting,
+            config.use_original_filter,
             //
             pts, tets, points,
             //
@@ -108,7 +113,6 @@ int main(int argc, const char* argv[])
         return -1;
     }
     if (args.robust_test) return 0;
-
 
     // test: export MI_mesh, patches, chains
     if (!args.timing_only && material_cells.size() > 0) {
