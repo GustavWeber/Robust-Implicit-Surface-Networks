@@ -6,9 +6,11 @@
 #define ROBUST_IMPLICIT_NETWORKS_MATERIAL_INTERFACE_H
 
 #include "robust_implicit_networks.h"
+#include <CGAL/Dimension.h>
 #include <CGAL/Distance_3/Point_3_Triangle_3.h>
 #include <CGAL/Distance_3/Ray_3_Plane_3.h>
 #include <CGAL/Distance_3/Segment_3_Line_3.h>
+#include <CGAL/Euclidean_distance.h>
 #include <CGAL/Kd_tree_rectangle.h>
 #include <CGAL/Splitters.h>
 #include <CGAL/enum.h>
@@ -56,9 +58,55 @@ public:
     friend const Point& get(const IndexPointMap<Point>& imap, IndexType index) { return imap[index]; }
 };
 
+
+template<typename Traits, typename Kernel, typename BaseDistance>
+struct PointDistanceAdapter {
+    typedef typename Traits::Point_d Point_d;
+    typedef typename Kernel::Point_3 Query_item;
+    typedef CGAL::Dimension_tag<3> D;
+    typedef typename Traits::FT FT;
+
+    const IndexPointMap<typename Kernel::Point_3>& _imap;
+    const BaseDistance _base;
+    
+    PointDistanceAdapter(const IndexPointMap<typename Kernel::Point_3>& imap, const BaseDistance& base) : _imap(imap), _base(base) { }
+
+    FT transformed_distance(const Query_item& query, const Point_d point){
+        return _base.transformed_distance(query, _imap[point]);
+    }
+
+    template<typename Coord_iterator>
+    FT transformed_distance_from_coordinates(const Query_item& query, Coord_iterator begin, Coord_iterator end) const {
+        FT x = begin++;
+        FT y = begin++;
+        FT z = begin++;
+        typename Kernel::Point_3 point(x, y, z);
+        return _base.transformed_distance(query, point);
+    }
+    
+    FT min_distance_to_rectangle(const Query_item& query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
+        return _base.min_distance_to_rectangle(query, rect);
+    }
+
+
+    FT max_distance_to_rectangle(const Query_item& query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
+        return _base.max_distance_to_rectangle(query, rect);
+    }
+
+    FT transformed_distance(FT d) const {
+        return _base.transformed_distance(d);
+    }
+
+    FT inverse_of_transformed_distance(FT d) const {
+        return _base.inverse_of_transformed_distance(d);
+    }
+};
+
+
 template<typename Traits, typename Kernel>
 struct TetDistance {
     typedef typename Kernel::Tetrahedron_3 Tetrahedron_3;
+    typedef typename Kernel::Point_3 Point_3;
     typedef typename Traits::Point_d Point_d;
     typedef Tetrahedron_3 Query_item;
     typedef CGAL::Dimension_tag<3> D;
@@ -66,16 +114,25 @@ struct TetDistance {
 
     const IndexPointMap<typename Kernel::Point_3>& imap;
 
-    FT transformed_distance(Query_item query, Point_d point){
+    FT transformed_distance(const Query_item& query, const Point_d& point){
         return CGAL::squared_distance(imap[point], query);
     }
+    
+    template<typename Coord_iterator>
+    FT transformed_distance_from_coordinates(const Query_item& query, Coord_iterator begin, Coord_iterator end) const {
+        FT x = begin++;
+        FT y = begin++;
+        FT z = begin++;
+        Point_3 point(x, y, z);
+        return CGAL::squared_distance(point, query);
+    }
 
-    FT min_distance_to_rectangle(Query_item query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
+    FT min_distance_to_rectangle(const Query_item& query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
         //return GJK::GetDistance<Kernel>(query, rect);
         return ApproxTetDist::GetDistance<Kernel>(query, rect);
     }
 
-    FT max_distance_to_rectangle(Query_item query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
+    FT max_distance_to_rectangle(const Query_item& query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
         FT max_distance;
         std::vector<FT> x_vals = {rect.min_coord(0), rect.max_coord(0)}; 
         std::vector<FT> y_vals = {rect.min_coord(1), rect.max_coord(1)};
@@ -172,7 +229,7 @@ typedef typename Kernel::Point_3 Point;
 typedef typename CGAL::Search_traits_3<Kernel> Traits_base;
 typedef typename CGAL::Search_traits_adapter<typename IndexPointMap<Point>::IndexType, IndexPointMap<Point>, Traits_base> Traits;
 typedef typename CGAL::Incremental_neighbor_search<Traits, TetDistance<Traits, Kernel>> IncrementalTetSearch;
-typedef typename CGAL::Incremental_neighbor_search<Traits> PointSearch;
+typedef typename CGAL::Incremental_neighbor_search<Traits, PointDistanceAdapter<Traits, Kernel, CGAL::Euclidean_distance<Traits_base>>> PointSearch;
 typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag_false, CGAL::Tag_false> SpatialTree;
         
 
@@ -214,16 +271,17 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
     ScopedTimer<> tree_timer("tree building");
     //Setup spatial datastructure
     IndexPointMap<Point> imap(sites);
+    Traits traits(imap);
     SpatialTree tree(
         boost::counting_iterator<typename IndexPointMap<Point>::IndexType>(0),
         boost::counting_iterator<typename IndexPointMap<Point>::IndexType>(n_func),
         typename SpatialTree::Splitter(),
-        Traits(imap)
+        traits
     );
     tree.build();
     timings.push_back(tree_timer.toc());
 
-    typename PointSearch::Distance point_distance(imap);
+    typename PointSearch::Distance point_distance(imap, CGAL::Euclidean_distance<Traits_base>());
  
     std::cout << "Finding dominating functions at verts" << std::endl;
     // highest material at vertices
