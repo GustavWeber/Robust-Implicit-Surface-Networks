@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.14)
 project(robust_implicit_networks LANGUAGES CXX C)
 
 # CGAL and its components
-find_package( CGAL QUIET COMPONENTS Qt5 )
+find_package( CGAL QUIET COMPONENTS Qt6 )
 
 if ( NOT CGAL_FOUND )
 
@@ -79,7 +79,7 @@ target_link_libraries(voronoi_diagram PRIVATE simplicial_arrangement::simplicial
     CLI11::CLI11 Eigen3::Eigen
     robust_implicit_networks implicit_functions::implicit_functions)
 
-target_link_libraries(voronoi_diagram PRIVATE CGAL::CGAL CGAL::CGAL_Qt5)
+target_link_libraries(voronoi_diagram PRIVATE CGAL::CGAL CGAL::CGAL_Qt6)
 target_link_libraries(voronoi_diagram PUBLIC CGAL::CGAL_Basic_viewer)
 
 
