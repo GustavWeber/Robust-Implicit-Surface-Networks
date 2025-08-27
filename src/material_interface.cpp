@@ -5,9 +5,12 @@
 #include <simplicial_arrangement/material_interface.h>
 
 #include "material_interface.h"
+#include <io.h>
 
 #include "ScopedTimer.h"
 typedef std::chrono::duration<double> Time_duration;
+
+//#define WRITEACTIVEFUNCS
 
 bool material_interface(
         bool robust_test,
@@ -91,6 +94,9 @@ bool material_interface(
         timings.push_back(timer.toc());
     }
 
+    
+    int full_empty = 0;
+
     // filter active materials in each tet
     // a tet is non-empty if there are material interface in it
     size_t num_intersecting_tet = 0;
@@ -119,8 +125,10 @@ bool material_interface(
             // if only one high material, there is no material interface
             if (materials.size() < 2) {  // no material interface
                 start_index_of_tet.push_back(material_in_tet.size());
+                full_empty++;
                 continue;
             }
+
             // find min of high materials
             min_h.fill(std::numeric_limits<double>::max());
             for(auto it = materials.begin(); it != materials.end(); it++) {
@@ -130,12 +138,18 @@ bool material_interface(
                     }
                 }
             }
+
+            /*
+            std::cout << "tet: " << i << " mins: ";
+            for(auto min: min_h) std::cout << min << " ";
+            std::cout << std::endl;
+            */
             // find materials greater than at least two mins of high materials
             size_t greater_count;
             for (size_t j = 0; j < n_func; ++j) {
                 greater_count = 0;
                 for (size_t k = 0; k < 4; ++k) {
-                    if (funcVals(tet[k],j) > min_h[k]) {
+                    if (funcVals(tet[k],j) >= min_h[k]) {
                         ++greater_count;
                     }
                 }
@@ -143,16 +157,24 @@ bool material_interface(
                     materials.insert(j);
                 }
             }
-            //
+
             ++num_intersecting_tet;
             material_in_tet.insert(material_in_tet.end(), materials.begin(), materials.end());
             start_index_of_tet.push_back(material_in_tet.size());
         }
         timings.push_back(timer.toc());
     }
+
+    std::cout << "full_empty: " << full_empty << std::endl;
+
+
     std::cout << "num_intersecting_tet = " << num_intersecting_tet << std::endl;
     stats_labels.emplace_back("num_intersecting_tet");
     stats.push_back(num_intersecting_tet);
+
+#ifdef WRITEACTIVEFUNCS
+    WriteActiveFuncDistribution(start_index_of_tet);
+#endif //WRITEACTIVEFUNCS
 
     // compute material interface in each tet
     std::vector<MaterialInterface<3>> cut_results;
@@ -387,6 +409,10 @@ bool material_interface(
         }
     }
 
+
+    std::cout << "num 2 func: " << num_2_func << std::endl;
+    std::cout << "num 3 func: " << num_3_func << std::endl;
+    std::cout << "num more func: " << num_more_func << std::endl;
 
     // extract material interface mesh
     std::vector<MI_Vert> MI_verts;
