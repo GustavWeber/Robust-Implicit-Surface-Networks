@@ -8,6 +8,7 @@
 #include <string>
 #include <nlohmann/json.hpp>
 #include "mesh.h"
+#include <fstream>
 
 struct Config {
     // Input
@@ -20,6 +21,9 @@ struct Config {
     bool use_secondary_lookup;
     bool use_topo_ray_shooting;
 
+    // Filter setting.
+    bool use_original_filter;
+
     // Parameter for tet grid generation.
     // (Only used if tet_mesh_file is empty.)
     size_t tet_mesh_resolution;
@@ -27,6 +31,10 @@ struct Config {
     std::array<double, 3> tet_mesh_bbox_max;
 };
 
+static std::string output_dir;
+
+void WriteActiveFuncDistribution(const std::vector<size_t>& start_index_of_tet);
+    
 Config parse_config_file(const std::string &filename);
 
 bool load_tet_mesh(const std::string &filename,

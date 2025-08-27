@@ -9,6 +9,21 @@
 #include <iostream>
 #include <ghc/filesystem.hpp>
 
+void WriteActiveFuncDistribution(const std::vector<size_t>& start_index_of_tet) {
+    std::cout << "WRITING ACTIVE FUNCS" << std::endl;
+    std::map<int, int> distribution;
+    for(int i = 0; i<start_index_of_tet.size()-1; i++){
+        const size_t& start_index = start_index_of_tet[i];
+        int num_mat = start_index_of_tet[i+1]-start_index_of_tet[i];
+        if(!distribution.contains(num_mat)) distribution[num_mat] = 0;
+        distribution[num_mat]++;
+    }
+    std::ofstream stream(output_dir + "active_func_distribution");
+    for(const std::pair<int, int>& key_item_pair: distribution){
+        stream << key_item_pair.first << ": " << key_item_pair.second << std::endl;
+    }
+    stream.close();
+}
 void process_path(const ghc::filesystem::path& base, ghc::filesystem::path& p)
 {
     if (p.is_relative()) {
@@ -59,6 +74,8 @@ Config parse_config_file(const std::string& filename)
     config.use_lookup = data["useLookup"];
     config.use_secondary_lookup = data["useSecondaryLookup"];
     config.use_topo_ray_shooting = data["useTopoRayShooting"];
+
+    config.use_original_filter = data["useOriginalFilter"];
     return config;
 }
 
