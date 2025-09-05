@@ -10,6 +10,7 @@
 /// The body of computing the material interface; used in `src/material_interface.cpp`
 ///
 ///  @param[in] robust_test         Toggle robust test: run twice and see if both results are consistent
+///  @param[in] write_active_funcs  Toggle writing of active func information
 ///  @param[in] use_lookup           Toggle to use a look-up table: Use look-up table to accelerate
 ///  @param[in] use_secondary_lookup            Toggle to use look-up tables for tetrahedral with two active functions
 ///  @param[in] use_topo_ray_shooting           Toggle to use topological ray shooting to compute the spatial decomposition induced by the arrangement
@@ -37,6 +38,7 @@
 ///  @see           `PolygonFace` and `Edge` in `mesh.h`
 bool material_interface(
         bool robust_test,
+        bool write_active_funcs,
         bool use_lookup,
         bool use_secondary_lookup,
         bool use_topo_ray_shooting,

@@ -9,6 +9,7 @@
 
 #include "material_interface.h"
 #include "implicit_functions.h"
+#include "ScopedTimer.h"
 
 using namespace simplicial_arrangement;
 
@@ -20,11 +21,13 @@ int main(int argc, const char* argv[])
         std::string config_file;
         bool timing_only = false;
         bool robust_test = false;
+        bool write_active_funcs = false;
     } args;
     CLI::App app{"Material Interface Command Line"};
     app.add_option("config_file", args.config_file, "Configuration file")->required();
     app.add_flag("-T,--timing-only", args.timing_only, "Record timing without saving results");
     app.add_flag("-R,--robust-test",args.robust_test, "Perform robustness test");
+    app.add_flag("-A,--active-funcs", args.write_active_funcs, "Write Active Function information into a file");
     CLI11_PARSE(app, argc, argv);
 
     // parse configure file
@@ -46,6 +49,13 @@ int main(int argc, const char* argv[])
 
     output_dir = config.output_dir;
 
+    std::vector<std::string> timing_labels;
+    std::vector<double> timings;
+   
+    // record stats
+    std::vector<std::string> stats_labels;
+    std::vector<size_t> stats;
+    
     // load tet mesh
     std::vector<std::array<double, 3>> pts;
     std::vector<std::array<size_t, 4>> tets;
@@ -61,11 +71,18 @@ int main(int argc, const char* argv[])
 
     // load implicit functions and compute function values at vertices
     Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> funcVals;
-    if (load_functions(config.func_file, pts, funcVals)) {
-        std::cout << "function loading finished." << std::endl;
-    } else {
-        std::cout << "function loading failed." << std::endl;
-        return -2;
+    {
+        ScopedTimer<> timer("Function Loading");
+
+        if (load_functions(config.func_file, pts, funcVals)) {
+            std::cout << "function loading finished." << std::endl;
+        } else {
+            std::cout << "function loading failed." << std::endl;
+            return -2;
+        }
+        
+        timing_labels.emplace_back("function loading");
+        timings.emplace_back(timer.toc());
     }
 
     // compute implicit arrangement
@@ -80,14 +97,10 @@ int main(int argc, const char* argv[])
     std::vector<std::vector<size_t>> material_cells;
     std::vector<size_t> cell_function_label;
     // record timings
-    std::vector<std::string> timing_labels;
-    std::vector<double> timings;
-    // record stats
-    std::vector<std::string> stats_labels;
-    std::vector<size_t> stats;
 
     if (!material_interface(
             args.robust_test,
+            args.write_active_funcs,
             config.use_lookup,
             config.use_secondary_lookup,
             config.use_topo_ray_shooting,

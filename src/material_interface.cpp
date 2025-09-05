@@ -10,10 +10,9 @@
 #include "ScopedTimer.h"
 typedef std::chrono::duration<double> Time_duration;
 
-//#define WRITEACTIVEFUNCS
-
 bool material_interface(
         bool robust_test,
+        bool write_active_funcs,
         bool use_lookup,
         bool use_secondary_lookup,
         bool use_topo_ray_shooting,
@@ -172,9 +171,7 @@ bool material_interface(
     stats_labels.emplace_back("num_intersecting_tet");
     stats.push_back(num_intersecting_tet);
 
-#ifdef WRITEACTIVEFUNCS
-    WriteActiveFuncDistribution(start_index_of_tet);
-#endif //WRITEACTIVEFUNCS
+    if(write_active_funcs) WriteActiveFuncDistribution(start_index_of_tet);
 
     // compute material interface in each tet
     std::vector<MaterialInterface<3>> cut_results;
@@ -315,7 +312,7 @@ bool material_interface(
             std::vector<Material<double, 3>> materials;
             materials.reserve(3);
             try {
-                for (size_t i = 0; i < tets.size(); i++) {
+                for (size_t i = 0; i < tets.size(); i++) { // O(t*inner)
                     start_index = start_index_of_tet[i];
                     num_func = start_index_of_tet[i + 1] - start_index;
                     if (num_func == 0) {
@@ -342,7 +339,7 @@ bool material_interface(
                     if (use_lookup && !use_secondary_lookup && num_func == 3) {
                         cut_result_index.push_back(cut_results.size());
                         disable_lookup_table();
-                        cut_results.emplace_back(std::move(compute_material_interface(materials)));
+                        cut_results.emplace_back(std::move(compute_material_interface(materials))); // O(k^3)
                         enable_lookup_table();
                     } else {
                         cut_result_index.push_back(cut_results.size());
