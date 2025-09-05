@@ -128,8 +128,7 @@ struct TetDistance {
     }
 
     FT min_distance_to_rectangle(const Query_item& query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
-        //return GJK::GetDistance<Kernel>(query, rect);
-        return ApproxTetDist::GetDistance<Kernel>(query, rect);
+        return ApproxTetDist::GetDistance_Box<Kernel>(query, rect);
     }
 
     FT max_distance_to_rectangle(const Query_item& query, const CGAL::Kd_tree_rectangle<FT, D>& rect) const {
@@ -200,6 +199,7 @@ typename Kernel::Tetrahedron_3 To_CGAL_Tet(const std::array<size_t, 4>& tet, con
 template<typename Kernel>
 bool voronoi_diagram(
     bool robust_test,
+    bool write_active_funcs,
     bool use_lookup,
     bool use_secondary_lookup,
     bool use_topo_ray_shooting,
@@ -266,172 +266,174 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         return evaluated(vert_index, site_index);
     };
     
-    std::cout << "Building tree" << std::endl;
-    timing_labels.emplace_back("tree building");
-    ScopedTimer<> tree_timer("tree building");
-    //Setup spatial datastructure
-    IndexPointMap<Point> imap(sites);
-    Traits traits(imap);
-    SpatialTree tree(
-        boost::counting_iterator<typename IndexPointMap<Point>::IndexType>(0),
-        boost::counting_iterator<typename IndexPointMap<Point>::IndexType>(n_func),
-        typename SpatialTree::Splitter(),
-        traits
-    );
-    tree.build();
-    timings.push_back(tree_timer.toc());
-
-    typename PointSearch::Distance point_distance(imap, CGAL::Euclidean_distance<Traits_base>());
- 
-    std::cout << "Finding dominating functions at verts" << std::endl;
-    // highest material at vertices
-    std::vector<size_t> highest_material_at_vert;
-    // degenerate vertex: more than one highest material, i.e. material interface passes the vertex
     std::vector<bool> is_degenerate_vertex;
     bool found_degenerate_vertex = false;
-    absl::flat_hash_map<size_t, std::vector<size_t>> highest_materials_at_vert;
-    {
-        timing_labels.emplace_back("highest func");
-        ScopedTimer<> timer("highest func");
-        is_degenerate_vertex.resize(n_verts, false);
-        highest_material_at_vert.reserve(n_verts);
-
-        for (Eigen::Index i = 0; i < n_verts; i++) {
-            Point query(verts[i][0], verts[i][1], verts[i][2]);
-
-            PointSearch Search(tree, query, 0.0, true, point_distance);
-
-            typename PointSearch::iterator it = Search.begin();
-            double distance = it->second;
-            highest_material_at_vert.push_back(it->first);
-            it++;
-            while(it->second <= distance){
-                highest_materials_at_vert[i].push_back(it->first);
-                found_degenerate_vertex = true;
-                is_degenerate_vertex[i] = true;
-                it++;
-            }
-            if(is_degenerate_vertex[i]){
-                highest_materials_at_vert[i].push_back(highest_material_at_vert[i]);
-            }
-        }
-        timings.push_back(timer.toc());
-    }
-    /*
-    std::vector<std::vector<size_t>> filtered_materials;
-    filtered_materials.reserve(n_tets);
-    std::vector<size_t> max_low_mats;
-    max_low_mats.reserve(n_tets);
-    */
-    std::cout << "Filter" << std::endl;
-    // filter active materials in each tet
-    // a tet is non-empty if there are material interface in it
-    int full_empty = 0;
-    size_t num_intersecting_tet = 0;
+    
     std::vector<size_t> material_in_tet; // active material indices in CRS vector format
     std::vector<size_t> start_index_of_tet;
+
+    int full_empty = 0;
+    size_t num_intersecting_tet = 0;
+
     {
-        timing_labels.emplace_back("filter");
-        ScopedTimer<> timer("filter");
-        material_in_tet.reserve(n_tets);
-        start_index_of_tet.reserve(n_tets + 1);
-        start_index_of_tet.push_back(0);
-        std::set<size_t> materials;
-        std::array<double, 4> min_h;
-        for (size_t i = 0; i < n_tets; ++i) {
-            const auto& tet = tets[i];
-            //filtered_materials.emplace_back();
-            // find high materials
-            materials.clear();
-            for (size_t j = 0; j < 4; ++j) {
-                if (is_degenerate_vertex[tet[j]]) {
-                    const auto& ms = highest_materials_at_vert[tet[j]];
-                    materials.insert(ms.begin(), ms.end());
-                } else {
-                    materials.insert(highest_material_at_vert[tet[j]]);
-                }
-            }
-            // if only one high material, there is no material interface
-            if (materials.size() < 2) {  // no material interface
-                start_index_of_tet.push_back(material_in_tet.size());
-                full_empty++;
-                //max_low_mats.emplace_back(0);
-                continue;
-            }
-            
-            // find min of high materials -> for each vertex find the lowest value out of the materials dominating at any vert.
-            min_h.fill(std::numeric_limits<double>::max());
-            for(auto it = materials.begin(); it != materials.end(); it++) {
-                for (size_t j = 0; j < 4; ++j) {
-                    if (funcVals(tet[j], *it) < min_h[j]) {
-                        min_h[j] = funcVals(tet[j], *it);
-                    }
-                }
-            }
-            
-            double max_low = std::numeric_limits<double>::lowest();
-            //size_t max_low_mat = -1;
-            for(auto material: materials){ //TODO: maybe we can also do this in the above loop
-                //Get vertex of t with lowest value for this material 
-                double min_val = std::numeric_limits<double>::max();
-                
-                for(int i = 0; i<4; i++){
-                    if(funcVals(tet[i], material) < min_val) min_val = funcVals(tet[i], material);
-                }
-                // If this minimum value is greater than the found max, update it 
-                if(min_val > max_low) {
-                    max_low = min_val;
-                    //max_low_mat = material;
-                }
-            }
-            IncrementalTetSearch Search(tree, To_CGAL_Tet<Kernel>(tet, verts), 0.0, true, {imap});
-            typename IncrementalTetSearch::iterator it = Search.begin();
-            for(int func_count = 0; func_count<n_func; func_count++){
-                if(-(it->second) < max_low) { // Filter 1: If your closest point is further than the furthest point of another mat, that mat dominates you in the tet
-                    break;
-                }
-                if(!use_original_filter) {
-                    materials.insert(it->first);
-                    it++;
-                    continue; 
-                }
+        std::cout << "Building tree" << std::endl;
+        timing_labels.emplace_back("tree building");
+        ScopedTimer<> tree_timer("tree building");
+        //Setup spatial datastructure
+        IndexPointMap<Point> imap(sites);
+        Traits traits(imap);
+        SpatialTree tree(
+            boost::counting_iterator<typename IndexPointMap<Point>::IndexType>(0),
+            boost::counting_iterator<typename IndexPointMap<Point>::IndexType>(n_func),
+            typename SpatialTree::Splitter(),
+            traits
+        );
+        tree.build();
+        timings.push_back(tree_timer.toc());
 
-                // Filter 2: if you are less than the minimum in three verts, you are not active
-                size_t greater_count = 0;
-                for(int vert = 0; vert<4; vert++){
-                    if(funcVals(tet[vert], it->first) >= min_h[vert]) greater_count++;
-                }
-                if(greater_count > 1){ 
-                    materials.insert(it->first);
-                    
-                    double min_val = std::numeric_limits<double>::max();
-                    for(int i = 0; i<4; i++){
-                        if(funcVals(tet[i], it->first) < min_val) min_val = funcVals(tet[i], it->first);
-                    }
-                    if(min_val > max_low ){ 
-                        max_low = min_val;
-                    }
-                }
+        typename PointSearch::Distance point_distance(imap, CGAL::Euclidean_distance<Traits_base>());
+     
+        std::cout << "Finding dominating functions at verts" << std::endl;
+        // highest material at vertices
+        std::vector<size_t> highest_material_at_vert;
+        // degenerate vertex: more than one highest material, i.e. material interface passes the vertex
+        absl::flat_hash_map<size_t, std::vector<size_t>> highest_materials_at_vert;
+        {
+            timing_labels.emplace_back("highest func");
+            ScopedTimer<> timer("highest func");
+            is_degenerate_vertex.resize(n_verts, false);
+            highest_material_at_vert.reserve(n_verts);
+
+            for (Eigen::Index i = 0; i < n_verts; i++) {
+                Point query(verts[i][0], verts[i][1], verts[i][2]);
+
+                PointSearch Search(tree, query, 0.0, true, point_distance);
+
+                typename PointSearch::iterator it = Search.begin();
+                double distance = it->second;
+                highest_material_at_vert.push_back(it->first);
                 it++;
-
+                while(it->second <= distance){
+                    highest_materials_at_vert[i].push_back(it->first);
+                    found_degenerate_vertex = true;
+                    is_degenerate_vertex[i] = true;
+                    it++;
+                }
+                if(is_degenerate_vertex[i]){
+                    highest_materials_at_vert[i].push_back(highest_material_at_vert[i]);
+                }
             }
-
-            ++num_intersecting_tet;
-            material_in_tet.insert(material_in_tet.end(), materials.begin(), materials.end());
-            start_index_of_tet.push_back(material_in_tet.size());
+            timings.push_back(timer.toc());
         }
-        timings.push_back(timer.toc());
+        /*
+        std::vector<std::vector<size_t>> filtered_materials;
+        filtered_materials.reserve(n_tets);
+        std::vector<size_t> max_low_mats;
+        max_low_mats.reserve(n_tets);
+        */
+        std::cout << "Filter" << std::endl;
+        // filter active materials in each tet
+        // a tet is non-empty if there are material interface in it
+            {
+            timing_labels.emplace_back("filter");
+            ScopedTimer<> timer("filter");
+            material_in_tet.reserve(n_tets);
+            start_index_of_tet.reserve(n_tets + 1);
+            start_index_of_tet.push_back(0);
+            std::set<size_t> materials;
+            std::array<double, 4> min_h;
+            for (size_t i = 0; i < n_tets; ++i) {
+                const auto& tet = tets[i];
+                //filtered_materials.emplace_back();
+                // find high materials
+                materials.clear();
+                for (size_t j = 0; j < 4; ++j) {
+                    if (is_degenerate_vertex[tet[j]]) {
+                        const auto& ms = highest_materials_at_vert[tet[j]];
+                        materials.insert(ms.begin(), ms.end());
+                    } else {
+                        materials.insert(highest_material_at_vert[tet[j]]);
+                    }
+                }
+                // if only one high material, there is no material interface
+                if (materials.size() < 2) {  // no material interface
+                    start_index_of_tet.push_back(material_in_tet.size());
+                    full_empty++;
+                    //max_low_mats.emplace_back(0);
+                    continue;
+                }
+                
+                // find min of high materials -> for each vertex find the lowest value out of the materials dominating at any vert.
+                min_h.fill(std::numeric_limits<double>::max());
+                for(auto it = materials.begin(); it != materials.end(); it++) {
+                    for (size_t j = 0; j < 4; ++j) {
+                        if (funcVals(tet[j], *it) < min_h[j]) {
+                            min_h[j] = funcVals(tet[j], *it);
+                        }
+                    }
+                }
+                
+                double max_low = std::numeric_limits<double>::lowest();
+                //size_t max_low_mat = -1;
+                for(auto material: materials){ //TODO: maybe we can also do this in the above loop
+                    //Get vertex of t with lowest value for this material 
+                    double min_val = std::numeric_limits<double>::max();
+                    
+                    for(int i = 0; i<4; i++){
+                        if(funcVals(tet[i], material) < min_val) min_val = funcVals(tet[i], material);
+                    }
+                    // If this minimum value is greater than the found max, update it 
+                    if(min_val > max_low) {
+                        max_low = min_val;
+                        //max_low_mat = material;
+                    }
+                }
+                IncrementalTetSearch Search(tree, To_CGAL_Tet<Kernel>(tet, verts), 0.0, true, {imap});
+                typename IncrementalTetSearch::iterator it = Search.begin();
+                for(int func_count = 0; func_count<n_func; func_count++){
+                    if(-(it->second) < max_low) { // Filter 1: If your closest point is further than the furthest point of another mat, that mat dominates you in the tet
+                        break;
+                    }
+                    if(!use_original_filter) {
+                        materials.insert(it->first);
+                        it++;
+                        continue; 
+                    }
+
+                    // Filter 2: if you are less than the minimum in three verts, you are not active
+                    size_t greater_count = 0;
+                    for(int vert = 0; vert<4; vert++){
+                        if(funcVals(tet[vert], it->first) >= min_h[vert]) greater_count++;
+                    }
+                    if(greater_count > 1){ 
+                        materials.insert(it->first);
+                        
+                        double min_val = std::numeric_limits<double>::max();
+                        for(int i = 0; i<4; i++){
+                            if(funcVals(tet[i], it->first) < min_val) min_val = funcVals(tet[i], it->first);
+                        }
+                        if(min_val > max_low ){ 
+                            max_low = min_val;
+                        }
+                    }
+                    it++;
+
+                }
+
+                ++num_intersecting_tet;
+                material_in_tet.insert(material_in_tet.end(), materials.begin(), materials.end());
+                start_index_of_tet.push_back(material_in_tet.size());
+            }
+            timings.push_back(timer.toc());
+        }
+        
+        std::cout << "full_empty: " << full_empty << std::endl;
+
+        std::cout << "num_intersecting_tet = " << num_intersecting_tet << std::endl;
+        stats_labels.emplace_back("num_intersecting_tet");
+        stats.push_back(num_intersecting_tet);
     }
-
-    std::cout << "full_empty: " << full_empty << std::endl;
-
-    std::cout << "num_intersecting_tet = " << num_intersecting_tet << std::endl;
-    stats_labels.emplace_back("num_intersecting_tet");
-    stats.push_back(num_intersecting_tet);
-
-#ifdef WRITEACTIVEFUNCS
-    WriteActiveFuncDistribution(start_index_of_tet);
-#endif //WRITEACTIVEFUNCS
+    if(write_active_funcs) WriteActiveFuncDistribution(start_index_of_tet);
 
     // compute material interface in each tet
     std::vector<MaterialInterface<3>> cut_results;
@@ -875,6 +877,7 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
                 return false;
             }
         }
+        std::cout << "Computed Face Order" << std::endl;
         // replace MI-face indices by patch indices
         for (size_t i = 0; i < half_face_pair_list.size(); i++) {
             half_patch_pair_list[i].resize(half_face_pair_list[i].size());
@@ -1003,6 +1006,9 @@ typedef typename CGAL::Kd_tree<Traits, CGAL::Sliding_midpoint<Traits>, CGAL::Tag
         sample_function_label[i] = funcVals(0, i);
     }
     cell_function_label = sign_propagation_MI(material_cells, shell_of_half_patch, shells, patch_function_label, n_func,sample_function_label);
+
+    std::cout << "done" << std::endl;
+
     return true;
 }
 
